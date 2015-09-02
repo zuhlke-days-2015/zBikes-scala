@@ -4,3 +4,5 @@
 
 GET     /station/:id      controllers.Stations.view(id: String)
 PUT     /station/:id      controllers.Stations.upsert(id: String)
+
+GET     /station/near/:lat/:long controllers.Stations.near(lat: Double, long: Double)

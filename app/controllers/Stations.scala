@@ -2,6 +2,7 @@ package controllers
 
 import play.api.libs.json.{JsObject, JsValue, Json}
 import play.api.mvc._
+import Json._
 
 object InMemoryState {
   import Model._
@@ -14,11 +15,20 @@ object Model {
   type StationId = String
   type BikeId = String
 
-  case class Location(lat: Double, long: Double)
+  case class Location(lat: Double, long: Double) {
+    def near(other: Location) = {
+      val tolerance = 0.02
+      other.lat <= lat + tolerance &&
+      other.lat >= lat - tolerance &&
+      other.long <= long + tolerance &&
+      other.long >= long - tolerance
+    }
+  }
+
   case class Station(name: String, location: Location)
 
-  implicit val locationFormat = Json.format[Location]
-  implicit val stationFormat = Json.format[Station]
+  implicit val locationFormat = format[Location]
+  implicit val stationFormat = format[Station]
 }
 
 class Stations extends Controller {
@@ -41,11 +51,21 @@ class Stations extends Controller {
   def view(id: String) = Action {
     InMemoryState.stations.get(id) match {
       case Some(station) => Ok(
-        Json.toJson(station).as[JsObject]
-        ++ Json.obj("availableBikes" -> InMemoryState.bikes.filter(byStationId(id)).keys)
+        toJson(station).as[JsObject]
+        ++ obj("availableBikes" -> InMemoryState.bikes.filter(byStationId(id)).keys.toSeq.sorted)
       )
       case None => NotFound
     }
+  }
+
+  def near(lat: Double, long: Double) = Action {
+    val location = Location(lat, long)
+    val localStations = InMemoryState.stations.filter { case (_, station)  =>
+      station.location near location
+    }
+    Ok(Json.obj("items" -> localStations.map { case (id, station) =>
+      toJson(station).as[JsObject] ++ obj("availableBikeCount" -> InMemoryState.bikes.count(byStationId(id)))
+    }))
   }
 }
 
