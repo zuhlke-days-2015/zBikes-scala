@@ -17,7 +17,7 @@ object Model {
 
   case class Location(lat: Double, long: Double) {
     def near(other: Location) = {
-      val tolerance = 0.02
+      val tolerance = 0.011
       other.lat <= lat + tolerance &&
       other.lat >= lat - tolerance &&
       other.long <= long + tolerance &&
@@ -66,6 +66,12 @@ class Stations extends Controller {
     Ok(Json.obj("items" -> localStations.map { case (id, station) =>
       toJson(station).as[JsObject] ++ obj("availableBikeCount" -> InMemoryState.bikes.count(byStationId(id)))
     }))
+  }
+
+  def removeAll = Action {
+    InMemoryState.stations = Map.empty
+    InMemoryState.bikes = Map.empty
+    Ok
   }
 }
 
