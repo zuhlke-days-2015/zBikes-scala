@@ -19,7 +19,7 @@ object Model {
   type BikeId = String
 
   sealed trait BikeStatus
-  case object Hired extends BikeStatus
+  case class Hired(username: String) extends BikeStatus
   case class Available(stationId: StationId) extends BikeStatus
 
   case class Location(lat: Double, long: Double) {
@@ -88,22 +88,28 @@ class Stations extends Controller {
     Ok
   }
 
-  def hireBike(stationId: String) = Action {
+  def hireBike(stationId: String) = Action(parse.json) { req =>
+    val username = (req.body \ "username").as[String]
     InMemoryState.bikes.find(availableAt(stationId)) match {
       case Some((availableBikeId, _)) =>
-        InMemoryState.bikes += (availableBikeId -> Hired)
+        InMemoryState.bikes += (availableBikeId -> Hired(username))
         Ok(obj("bikeId" -> availableBikeId))
       case None =>
         NotFound
     }
   }
 
-  def returnBike(stationId: StationId, bikeId: BikeId) = Action {
+  def returnBike(stationId: StationId, bikeId: BikeId) = Action(parse.json) { req =>
+    val username = (req.body \ "username").as[String]
     InMemoryState.bikes.get(bikeId) match {
       case None => NotFound
-      case Some(Hired) =>
+      case Some(Hired(`username`)) =>
         InMemoryState.bikes += (bikeId -> Available(stationId))
         Ok
+      case Some(Hired(otherUsername)) =>
+        Forbidden
+      case Some(Available(_)) =>
+        Conflict
     }
   }
 
