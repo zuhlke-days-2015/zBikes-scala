@@ -4,16 +4,23 @@ import play.api.libs.json._
 import play.api.mvc._
 import Json._
 
+import scala.collection.immutable.SortedMap
+
+
 object InMemoryState {
   import Model._
 
   var stations = Map.empty[StationId, Station]
-  var bikes = Map.empty[BikeId, StationId]
+  var bikes = SortedMap.empty[BikeId, BikeStatus]
 }
 
 object Model {
   type StationId = String
   type BikeId = String
+
+  sealed trait BikeStatus
+  case object Hired extends BikeStatus
+  case class Available(stationId: StationId) extends BikeStatus
 
   case class Location(lat: Double, long: Double) {
     def near(other: Location) = {
@@ -39,25 +46,23 @@ class Stations extends Controller {
   import Model._
   import JsonFormatters._
 
-  def upsert(id: String) = Action(BodyParsers.parse.json) { implicit req =>
+  def upsert(stationId: String) = Action(BodyParsers.parse.json) { implicit req =>
     val station = req.body.as[Station]
     val bikes = (req.body \ "availableBikes").as[Seq[BikeId]]
 
-    InMemoryState.stations += (id -> station)
-    InMemoryState.bikes = InMemoryState.bikes.filterNot(byStationId(id))
+    InMemoryState.stations += (stationId -> station)
+    InMemoryState.bikes = InMemoryState.bikes.filterNot(availableAt(stationId))
     for (bikeId <- bikes) {
-      InMemoryState.bikes += (bikeId -> id)
+      InMemoryState.bikes += (bikeId -> Available(stationId))
     }
-    Ok.withHeaders("Location" -> routes.Stations.view(id).url)
+    Ok.withHeaders("Location" -> routes.Stations.view(stationId).url)
   }
 
-  def byStationId(id: String): PartialFunction[(BikeId, StationId), Boolean] = { case (_, stationId) => stationId == id }
-
-  def view(id: String) = Action {
-    InMemoryState.stations.get(id) match {
+  def view(stationId: String) = Action {
+    InMemoryState.stations.get(stationId) match {
       case Some(station) => Ok(
         toJson(station).as[JsObject]
-        ++ obj("availableBikes" -> InMemoryState.bikes.filter(byStationId(id)).keys.toSeq.sorted)
+        ++ obj("availableBikes" -> InMemoryState.bikes.filter(availableAt(stationId)).keys.toSeq.sorted)
       )
       case None => NotFound
     }
@@ -68,22 +73,43 @@ class Stations extends Controller {
     val localStations = InMemoryState.stations.filter { case (_, station)  =>
       station.location near location
     }
-    Ok(Json.obj("items" -> localStations.map { case (id, station) =>
+    Ok(Json.obj("items" -> localStations.map { case (stationId, station) =>
       toJson(station).as[JsObject] ++ obj(
-        "availableBikeCount" -> InMemoryState.bikes.count(byStationId(id)),
-        "hireUrl" -> routes.Stations.hireBike(id)
+        "availableBikeCount" -> InMemoryState.bikes.count(availableAt(stationId)),
+        "selfUrl" -> routes.Stations.view(stationId),
+        "hireUrl" -> routes.Stations.hireBike(stationId)
       )
     }))
   }
 
   val removeAll = Action {
     InMemoryState.stations = Map.empty
-    InMemoryState.bikes = Map.empty
+    InMemoryState.bikes = SortedMap.empty
     Ok
   }
 
-  def hireBike(id: String) = Action {
-    Ok
+  def hireBike(stationId: String) = Action {
+    InMemoryState.bikes.find(availableAt(stationId)) match {
+      case Some((availableBikeId, _)) =>
+        InMemoryState.bikes += (availableBikeId -> Hired)
+        Ok(obj("bikeId" -> availableBikeId))
+      case None =>
+        NotFound
+    }
+  }
+
+  def returnBike(stationId: StationId, bikeId: BikeId) = Action {
+    InMemoryState.bikes.get(bikeId) match {
+      case None => NotFound
+      case Some(Hired) =>
+        InMemoryState.bikes += (bikeId -> Available(stationId))
+        Ok
+    }
+  }
+
+  private def availableAt(stationId: String): PartialFunction[(BikeId, BikeStatus), Boolean] = {
+    case (_, Available(id)) => stationId == id
+    case _ => false
   }
 }
 
