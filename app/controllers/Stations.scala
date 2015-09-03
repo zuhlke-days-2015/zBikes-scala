@@ -1,6 +1,6 @@
 package controllers
 
-import play.api.libs.json.{JsObject, JsValue, Json}
+import play.api.libs.json._
 import play.api.mvc._
 import Json._
 
@@ -31,8 +31,13 @@ object Model {
   implicit val stationFormat = format[Station]
 }
 
+object JsonFormatters {
+  implicit val callWrites: Writes[Call] = Writes[Call](c => JsString(c.url))
+}
+
 class Stations extends Controller {
   import Model._
+  import JsonFormatters._
 
   def upsert(id: String) = Action(BodyParsers.parse.json) { implicit req =>
     val station = req.body.as[Station]
@@ -64,13 +69,20 @@ class Stations extends Controller {
       station.location near location
     }
     Ok(Json.obj("items" -> localStations.map { case (id, station) =>
-      toJson(station).as[JsObject] ++ obj("availableBikeCount" -> InMemoryState.bikes.count(byStationId(id)))
+      toJson(station).as[JsObject] ++ obj(
+        "availableBikeCount" -> InMemoryState.bikes.count(byStationId(id)),
+        "hireUrl" -> routes.Stations.hireBike(id)
+      )
     }))
   }
 
-  def removeAll = Action {
+  val removeAll = Action {
     InMemoryState.stations = Map.empty
     InMemoryState.bikes = Map.empty
+    Ok
+  }
+
+  def hireBike(id: String) = Action {
     Ok
   }
 }
