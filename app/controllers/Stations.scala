@@ -1,6 +1,9 @@
 package controllers
 
+import play.api.Play
+import play.api.libs.concurrent.Execution
 import play.api.libs.json._
+import play.api.libs.ws.WS
 import play.api.mvc._
 import Json._
 
@@ -45,6 +48,8 @@ object JsonFormatters {
 class Stations extends Controller {
   import Model._
   import JsonFormatters._
+  import Play.current
+  import Execution.Implicits.defaultContext
 
   def upsert(stationId: String) = Action(BodyParsers.parse.json) { implicit req =>
     val station = req.body.as[Station]
@@ -88,14 +93,19 @@ class Stations extends Controller {
     Ok
   }
 
-  def hireBike(stationId: String) = Action(parse.json) { req =>
+  def hireBike(stationId: String) = Action.async(parse.json) { req =>
     val username = (req.body \ "username").as[String]
-    InMemoryState.bikes.find(availableAt(stationId)) match {
-      case Some((availableBikeId, _)) =>
-        InMemoryState.bikes += (availableBikeId -> Hired(username))
-        Ok(obj("bikeId" -> availableBikeId))
-      case None =>
-        NotFound
+    WS.url(s"http://localhost:9005/customer/$username").get().map(_.status).map {
+      case OK =>
+        InMemoryState.bikes.find(availableAt(stationId)) match {
+          case Some((availableBikeId, _)) =>
+            InMemoryState.bikes += (availableBikeId -> Hired(username))
+            Ok(obj("bikeId" -> availableBikeId))
+          case None =>
+            NotFound
+        }
+      case UNAUTHORIZED => Unauthorized
+      case other => InternalServerError
     }
   }
 
