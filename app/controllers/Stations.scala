@@ -123,6 +123,21 @@ class Stations extends Controller {
     }
   }
 
+  def depleted = Action {
+    val depletedStations = InMemoryState.stations.keys flatMap { stationId =>
+      val count = InMemoryState.bikes.count(availableAt(stationId))
+      if (count < 10) Some(stationId -> count)
+      else None
+    }
+
+    Ok(Json.obj("items" -> depletedStations.map { case (stationId, bikeCount) =>
+      Json.obj(
+        "stationUrl" -> routes.Stations.view(stationId),
+        "availableBikes" -> bikeCount
+      )
+    }))
+  }
+
   private def availableAt(stationId: String): PartialFunction[(BikeId, BikeStatus), Boolean] = {
     case (_, Available(id)) => stationId == id
     case _ => false

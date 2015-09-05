@@ -2,6 +2,7 @@
 # This file defines all application routes (Higher priority routes first)
 # ~~~~
 
+GET     /station/depleted                  controllers.Stations.depleted
 GET     /station/:stationId                controllers.Stations.view(stationId: String)
 PUT     /station/:stationId                controllers.Stations.upsert(stationId: String)
 POST    /station/:stationId/bike           controllers.Stations.hireBike(stationId: String)
@@ -10,4 +11,3 @@ POST    /station/:stationId/bike/:bikeId   controllers.Stations.returnBike(stati
 DELETE  /station/all                       controllers.Stations.removeAll
 
 GET     /station/near/:lat/:long           controllers.Stations.near(lat: Double, long: Double)
-
