@@ -13,8 +13,17 @@ import scala.collection.immutable.SortedMap
 object InMemoryState {
   import Model._
 
-  var stations = Map.empty[StationId, Station]
-  var bikes = SortedMap.empty[BikeId, BikeStatus]
+  var stationStore = Map.empty[StationId, Station]
+  var bikeStore = SortedMap.empty[BikeId, BikeStatus]
+
+  def availableAt(stationId: String): PartialFunction[(BikeId, BikeStatus), Boolean] = {
+    case (_, Available(id)) => stationId == id
+    case _ => false
+  }
+
+  def nearTo(otherLocation: Location): ((StationId, Station)) => Boolean = {
+    case (_, otherStation) => otherStation.location near otherLocation
+  }
 }
 
 object Model {
@@ -50,24 +59,25 @@ class Stations extends Controller {
   import JsonFormatters._
   import Play.current
   import Execution.Implicits.defaultContext
+  import InMemoryState._
 
   def upsert(stationId: String) = Action(BodyParsers.parse.json) { implicit req =>
     val station = req.body.as[Station]
     val bikes = (req.body \ "availableBikes").as[Seq[BikeId]]
 
-    InMemoryState.stations += (stationId -> station)
-    InMemoryState.bikes = InMemoryState.bikes.filterNot(availableAt(stationId))
+    stationStore += (stationId -> station)
+    bikeStore = bikeStore.filterNot(availableAt(stationId))
     for (bikeId <- bikes) {
-      InMemoryState.bikes += (bikeId -> Available(stationId))
+      bikeStore += (bikeId -> Available(stationId))
     }
     Ok.withHeaders("Location" -> routes.Stations.view(stationId).url)
   }
 
   def view(stationId: String) = Action {
-    InMemoryState.stations.get(stationId) match {
+    stationStore.get(stationId) match {
       case Some(station) => Ok(
         toJson(station).as[JsObject]
-        ++ obj("availableBikes" -> InMemoryState.bikes.filter(availableAt(stationId)).keys.toSeq.sorted)
+        ++ obj("availableBikes" -> bikeStore.filter(availableAt(stationId)).keys.toSeq.sorted)
       )
       case None => NotFound
     }
@@ -75,12 +85,10 @@ class Stations extends Controller {
 
   def near(lat: Double, long: Double) = Action {
     val location = Location(lat, long)
-    val localStations = InMemoryState.stations.filter { case (_, station)  =>
-      station.location near location
-    }
+    val localStations = stationStore.filter(nearTo(location))
     Ok(Json.obj("items" -> localStations.map { case (stationId, station) =>
       toJson(station).as[JsObject] ++ obj(
-        "availableBikeCount" -> InMemoryState.bikes.count(availableAt(stationId)),
+        "availableBikeCount" -> bikeStore.count(availableAt(stationId)),
         "selfUrl" -> routes.Stations.view(stationId),
         "hireUrl" -> routes.Stations.hireBike(stationId)
       )
@@ -88,8 +96,8 @@ class Stations extends Controller {
   }
 
   val removeAll = Action {
-    InMemoryState.stations = Map.empty
-    InMemoryState.bikes = SortedMap.empty
+    stationStore = Map.empty
+    bikeStore = SortedMap.empty
     Ok
   }
 
@@ -97,9 +105,9 @@ class Stations extends Controller {
     val username = (req.body \ "username").as[String]
     WS.url(s"http://localhost:9005/customer/$username").get().map(_.status).map {
       case OK =>
-        InMemoryState.bikes.find(availableAt(stationId)) match {
+        bikeStore.find(availableAt(stationId)) match {
           case Some((availableBikeId, _)) =>
-            InMemoryState.bikes += (availableBikeId -> Hired(username))
+            bikeStore += (availableBikeId -> Hired(username))
             Ok(obj("bikeId" -> availableBikeId))
           case None =>
             NotFound
@@ -111,10 +119,10 @@ class Stations extends Controller {
 
   def returnBike(stationId: StationId, bikeId: BikeId) = Action(parse.json) { req =>
     val username = (req.body \ "username").as[String]
-    InMemoryState.bikes.get(bikeId) match {
+    bikeStore.get(bikeId) match {
       case None => NotFound
       case Some(Hired(`username`)) =>
-        InMemoryState.bikes += (bikeId -> Available(stationId))
+        bikeStore += (bikeId -> Available(stationId))
         Ok
       case Some(Hired(otherUsername)) =>
         Forbidden
@@ -124,23 +132,28 @@ class Stations extends Controller {
   }
 
   def depleted = Action {
-    val depletedStations = InMemoryState.stations.keys flatMap { stationId =>
-      val count = InMemoryState.bikes.count(availableAt(stationId))
-      if (count < 10) Some(stationId -> count)
-      else None
+    val depletedStations = stationStore flatMap { case (depletedStationId, depletedStation) =>
+      val count = bikeStore.count(availableAt(depletedStationId))
+      if (count > 10) None
+      else {
+        val nearbyStations = stationStore.filter(nearTo(depletedStation.location))
+        val nearbyFullStations = nearbyStations.flatMap { case (stationId, station) =>
+          val count = bikeStore.count(availableAt(stationId))
+          if (count > 20) Some(stationId -> count)
+          else None
+        }
+        Some(depletedStationId -> (count, nearbyFullStations))
+      }
     }
 
-    Ok(Json.obj("items" -> depletedStations.map { case (stationId, bikeCount) =>
-      Json.obj(
-        "stationUrl" -> routes.Stations.view(stationId),
-        "availableBikes" -> bikeCount
-      )
-    }))
-  }
+    val stationUrlAndAvailableBikes = (stationId: StationId, bikeCount: Int) => Json.obj(
+      "stationUrl" -> routes.Stations.view(stationId),
+      "availableBikes" -> bikeCount
+    )
 
-  private def availableAt(stationId: String): PartialFunction[(BikeId, BikeStatus), Boolean] = {
-    case (_, Available(id)) => stationId == id
-    case _ => false
+    Ok(Json.obj("items" -> depletedStations.map { case (stationId, (bikeCount, nearbyFullStations)) =>
+      stationUrlAndAvailableBikes(stationId, bikeCount) ++ Json.obj("nearbyFullStations" -> nearbyFullStations.map(stationUrlAndAvailableBikes.tupled))
+    }))
   }
 }
 
