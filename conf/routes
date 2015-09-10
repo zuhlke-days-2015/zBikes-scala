@@ -2,12 +2,12 @@
 # This file defines all application routes (Higher priority routes first)
 # ~~~~
 
-GET     /station/depleted                  controllers.Stations.depleted
-GET     /station/:stationId                controllers.Stations.view(stationId: String)
-PUT     /station/:stationId                controllers.Stations.upsert(stationId: String)
-POST    /station/:stationId/bike           controllers.Stations.hireBike(stationId: String)
-POST    /station/:stationId/bike/:bikeId   controllers.Stations.returnBike(stationId: String, bikeId: String)
+GET     /station/depleted                  zBikes.StationsController.depleted
+DELETE  /station/all                       zBikes.StationsController.removeAll
 
-DELETE  /station/all                       controllers.Stations.removeAll
+GET     /station/:stationId                zBikes.StationsController.view(stationId: String)
+PUT     /station/:stationId                zBikes.StationsController.upsert(stationId: String)
+POST    /station/:stationId/bike           zBikes.StationsController.hireBike(stationId: String)
+POST    /station/:stationId/bike/:bikeId   zBikes.StationsController.returnBike(stationId: String, bikeId: String)
 
-GET     /station/near/:lat/:long           controllers.Stations.near(lat: Double, long: Double)
+GET     /station/near/:lat/:long           zBikes.StationsController.near(lat: Double, long: Double)

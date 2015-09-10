@@ -1,96 +1,53 @@
-package controllers
+package zBikes
 
 import play.api.Play
 import play.api.libs.concurrent.Execution
-import play.api.libs.json._
+import play.api.libs.json.{JsObject, Json}
 import play.api.libs.ws.WS
-import play.api.mvc._
-import Json._
+import play.api.mvc.{Action, BodyParsers, Controller}
 
 import scala.collection.immutable.SortedMap
 
+class StationsController extends Controller {
 
-object InMemoryState {
-  import Model._
-
-  var stationStore = Map.empty[StationId, Station]
-  var bikeStore = SortedMap.empty[BikeId, BikeStatus]
-
-  def availableAt(stationId: String): PartialFunction[(BikeId, BikeStatus), Boolean] = {
-    case (_, Available(id)) => stationId == id
-    case _ => false
-  }
-
-  def nearTo(otherLocation: Location): ((StationId, Station)) => Boolean = {
-    case (_, otherStation) => otherStation.location near otherLocation
-  }
-}
-
-object Model {
-  type StationId = String
-  type BikeId = String
-
-  sealed trait BikeStatus
-  case class Hired(username: String) extends BikeStatus
-  case class Available(stationId: StationId) extends BikeStatus
-
-  case class Location(lat: Double, long: Double) {
-    def near(other: Location) = {
-      val tolerance = 0.011
-      other.lat <= lat + tolerance &&
-      other.lat >= lat - tolerance &&
-      other.long <= long + tolerance &&
-      other.long >= long - tolerance
-    }
-  }
-
-  case class Station(name: String, location: Location)
-
-  implicit val locationFormat = format[Location]
-  implicit val stationFormat = format[Station]
-}
-
-object JsonFormatters {
-  implicit val callWrites: Writes[Call] = Writes[Call](c => JsString(c.url))
-}
-
-class Stations extends Controller {
+  import Execution.Implicits.defaultContext
+  import Play.current
   import Model._
   import JsonFormatters._
-  import Play.current
-  import Execution.Implicits.defaultContext
-  import InMemoryState._
+  import Json._
+
+  val persistence = InMemoryState
+  import persistence._
 
   def upsert(stationId: String) = Action(BodyParsers.parse.json) { implicit req =>
     val station = req.body.as[Station]
     val bikes = (req.body \ "availableBikes").as[Seq[BikeId]]
 
-    stationStore += (stationId -> station)
+    InMemoryState.upsert(stationId -> station)
     bikeStore = bikeStore.filterNot(availableAt(stationId))
     for (bikeId <- bikes) {
       bikeStore += (bikeId -> Available(stationId))
     }
-    Ok.withHeaders("Location" -> routes.Stations.view(stationId).url)
+    Ok.withHeaders("Location" -> routes.StationsController.view(stationId).url)
   }
 
   def view(stationId: String) = Action {
     stationStore.get(stationId) match {
       case Some(station) => Ok(
         toJson(station).as[JsObject]
-        ++ obj("availableBikes" -> bikeStore.filter(availableAt(stationId)).keys.toSeq.sorted)
+          ++ obj("availableBikes" -> bikeStore.filter(availableAt(stationId)).keys.toSeq.sorted)
       )
       case None => NotFound
     }
   }
 
   def near(lat: Double, long: Double) = Action {
-    val location = Location(lat, long)
-    val localStations = stationStore.filter(nearTo(location))
+    val localStations = stationStore.filter(nearTo(Location(lat, long)))
     Ok(Json.obj("items" -> localStations.map { case (stationId, station) =>
       toJson(station).as[JsObject] ++ obj(
         "availableBikeCount" -> bikeStore.count(availableAt(stationId)),
-        "selfUrl" -> routes.Stations.view(stationId),
-        "hireUrl" -> routes.Stations.hireBike(stationId)
+        "selfUrl" -> routes.StationsController.view(stationId),
+        "hireUrl" -> routes.StationsController.hireBike(stationId)
       )
     }))
   }
@@ -142,12 +99,12 @@ class Stations extends Controller {
           if (count > 20) Some(stationId -> count)
           else None
         }
-        Some(depletedStationId -> (count, nearbyFullStations))
+        Some(depletedStationId ->(count, nearbyFullStations))
       }
     }
 
     val stationUrlAndAvailableBikes = (stationId: StationId, bikeCount: Int) => Json.obj(
-      "stationUrl" -> routes.Stations.view(stationId),
+      "stationUrl" -> routes.StationsController.view(stationId),
       "availableBikes" -> bikeCount
     )
 
@@ -156,4 +113,3 @@ class Stations extends Controller {
     }))
   }
 }
-
