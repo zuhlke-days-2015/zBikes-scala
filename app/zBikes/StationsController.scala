@@ -37,26 +37,23 @@ class StationsController extends Controller {
     Mongo.Bikes.findAll(stationId) flatMap { bikes =>
       Mongo.Stations.find(id = stationId) map {
         case Some(station) =>
-          Ok(
-            toJson(station).as[JsObject] ++ obj("availableBikes" -> bikes.map(_._id))
-          )
+          Ok(toJson(station).as[JsObject] ++ obj("availableBikes" -> bikes.map(_._id)))
         case None => NotFound
       }
     }
   }
 
   def near(lat: Double, long: Double) = Action.async {
-    Mongo.Stations.findNear(Location(lat, long)).flatMap { localStations =>
-      Mongo.Bikes.findAll(localStations.map(_.id)).map { bikes =>
-        Ok(Json.obj("items" -> localStations.map { station =>
-          toJson(station).as[JsObject] ++ obj(
-            "availableBikeCount" -> bikes.count(_.atStation == station.id),
-            "selfUrl" -> routes.StationsController.view(station.id),
-            "hireUrl" -> routes.StationsController.hireBike(station.id)
-          )
-        }))
-      }
-    }
+    for {
+      localStations <- Mongo.Stations.findNear(Location(lat, long))
+      bikes <- Mongo.Bikes.findAll(localStations.map(_.id))
+    } yield Ok(Json.obj("items" -> localStations.map { station =>
+      toJson(station).as[JsObject] ++ obj(
+        "availableBikeCount" -> bikes.count(_.atStation == station.id),
+        "selfUrl" -> routes.StationsController.view(station.id),
+        "hireUrl" -> routes.StationsController.hireBike(station.id)
+      )
+    }))
   }
 
 
