@@ -1,6 +1,7 @@
 package zBikes
 
-import play.api.libs.json.Json
+import play.api.libs.json.{JsObject, Json}
+import reactivemongo.bson.BSONObjectID
 
 object Model {
   import Json._
@@ -22,8 +23,9 @@ object Model {
     }
   }
 
-  case class Station(name: String, location: Location)
+  case class Station(id: String, name: String, location: Location)
 
   implicit val locationFormat = format[Location]
-  implicit val stationFormat = format[Station]
+  implicit val stationReads = reads[Station]
+  implicit val stationWrites = writes[Station].transform(js => js.as[JsObject] - "id")
 }

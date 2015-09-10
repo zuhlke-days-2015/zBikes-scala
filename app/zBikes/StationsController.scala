@@ -13,58 +13,59 @@ class StationsController extends Controller {
   import Execution.Implicits.defaultContext
   import Play.current
   import Model._
-  import JsonFormatters._
   import Json._
 
-  val persistence = InMemoryState
-  import persistence._
-
   def upsert(stationId: String) = Action(BodyParsers.parse.json) { implicit req =>
-    val station = req.body.as[Station]
+    val station = Station(
+      id = stationId,
+      name = (req.body \ "name").as[String],
+      location = (req.body \ "location").as[Location]
+    )
     val bikes = (req.body \ "availableBikes").as[Seq[BikeId]]
 
-    InMemoryState.upsert(stationId -> station)
-    bikeStore = bikeStore.filterNot(availableAt(stationId))
+    Mongo.upsertStation(station)
+    InMemoryState.bikeStore = InMemoryState.bikeStore.filterNot(InMemoryState.availableAt(stationId))
     for (bikeId <- bikes) {
-      bikeStore += (bikeId -> Available(stationId))
+      InMemoryState.bikeStore += (bikeId -> Available(stationId))
     }
     Ok.withHeaders("Location" -> routes.StationsController.view(stationId).url)
   }
 
-  def view(stationId: String) = Action {
-    stationStore.get(stationId) match {
+  def view(stationId: String) = Action.async {
+    Mongo.findStation(id = stationId) map {
       case Some(station) => Ok(
-        toJson(station).as[JsObject]
-          ++ obj("availableBikes" -> bikeStore.filter(availableAt(stationId)).keys.toSeq.sorted)
+        toJson(station).as[JsObject] ++ obj("availableBikes" -> InMemoryState.bikeStore.filter(InMemoryState.availableAt(stationId)).keys.toSeq.sorted)
       )
       case None => NotFound
     }
   }
 
-  def near(lat: Double, long: Double) = Action {
-    val localStations = stationStore.filter(nearTo(Location(lat, long)))
-    Ok(Json.obj("items" -> localStations.map { case (stationId, station) =>
-      toJson(station).as[JsObject] ++ obj(
-        "availableBikeCount" -> bikeStore.count(availableAt(stationId)),
-        "selfUrl" -> routes.StationsController.view(stationId),
-        "hireUrl" -> routes.StationsController.hireBike(stationId)
-      )
-    }))
+  def near(lat: Double, long: Double) = Action.async {
+    Mongo.allStations.map(_.filter(InMemoryState.nearTo(Location(lat, long)))).map { localStations =>
+      Ok(Json.obj("items" -> localStations.map { station =>
+        toJson(station).as[JsObject] ++ obj(
+          "availableBikeCount" -> InMemoryState.bikeStore.count(InMemoryState.availableAt(station.id)),
+          "selfUrl" -> routes.StationsController.view(station.id),
+          "hireUrl" -> routes.StationsController.hireBike(station.id)
+        )
+      }))
+    }
   }
 
-  val removeAll = Action {
-    stationStore = Map.empty
-    bikeStore = SortedMap.empty
-    Ok
+  val removeAll = Action.async {
+    Mongo.removeAllStations.map { _ =>
+      InMemoryState.bikeStore = SortedMap.empty
+      Ok
+    }
   }
 
   def hireBike(stationId: String) = Action.async(parse.json) { req =>
     val username = (req.body \ "username").as[String]
     WS.url(s"http://localhost:9005/customer/$username").get().map(_.status).map {
       case OK =>
-        bikeStore.find(availableAt(stationId)) match {
+        InMemoryState.bikeStore.find(InMemoryState.availableAt(stationId)) match {
           case Some((availableBikeId, _)) =>
-            bikeStore += (availableBikeId -> Hired(username))
+            InMemoryState.bikeStore += (availableBikeId -> Hired(username))
             Ok(obj("bikeId" -> availableBikeId))
           case None =>
             NotFound
@@ -76,10 +77,10 @@ class StationsController extends Controller {
 
   def returnBike(stationId: StationId, bikeId: BikeId) = Action(parse.json) { req =>
     val username = (req.body \ "username").as[String]
-    bikeStore.get(bikeId) match {
+    InMemoryState.bikeStore.get(bikeId) match {
       case None => NotFound
       case Some(Hired(`username`)) =>
-        bikeStore += (bikeId -> Available(stationId))
+        InMemoryState.bikeStore += (bikeId -> Available(stationId))
         Ok
       case Some(Hired(otherUsername)) =>
         Forbidden
@@ -88,28 +89,30 @@ class StationsController extends Controller {
     }
   }
 
-  def depleted = Action {
-    val depletedStations = stationStore flatMap { case (depletedStationId, depletedStation) =>
-      val count = bikeStore.count(availableAt(depletedStationId))
-      if (count > 10) None
-      else {
-        val nearbyStations = stationStore.filter(nearTo(depletedStation.location))
-        val nearbyFullStations = nearbyStations.flatMap { case (stationId, station) =>
-          val count = bikeStore.count(availableAt(stationId))
-          if (count > 20) Some(stationId -> count)
-          else None
+  def depleted = Action.async {
+    Mongo.allStations.map { stationStore =>
+      val depletedStations = stationStore flatMap { case depletedStation =>
+        val count = InMemoryState.bikeStore.count(InMemoryState.availableAt(depletedStation.id))
+        if (count > 10) None
+        else {
+          val nearbyStations = stationStore.filter(InMemoryState.nearTo(depletedStation.location))
+          val nearbyFullStations = nearbyStations.flatMap { case station =>
+            val count = InMemoryState.bikeStore.count(InMemoryState.availableAt(station.id))
+            if (count > 20) Some(station.id -> count)
+            else None
+          }
+          Some(depletedStation.id -> (count, nearbyFullStations))
         }
-        Some(depletedStationId ->(count, nearbyFullStations))
       }
+
+      val stationUrlAndAvailableBikes = (stationId: StationId, bikeCount: Int) => Json.obj(
+        "stationUrl" -> routes.StationsController.view(stationId),
+        "availableBikes" -> bikeCount
+      )
+
+      Ok(Json.obj("items" -> depletedStations.map { case (stationId, (bikeCount, nearbyFullStations)) =>
+        stationUrlAndAvailableBikes(stationId, bikeCount) ++ Json.obj("nearbyFullStations" -> nearbyFullStations.map(stationUrlAndAvailableBikes.tupled))
+      }))
     }
-
-    val stationUrlAndAvailableBikes = (stationId: StationId, bikeCount: Int) => Json.obj(
-      "stationUrl" -> routes.StationsController.view(stationId),
-      "availableBikes" -> bikeCount
-    )
-
-    Ok(Json.obj("items" -> depletedStations.map { case (stationId, (bikeCount, nearbyFullStations)) =>
-      stationUrlAndAvailableBikes(stationId, bikeCount) ++ Json.obj("nearbyFullStations" -> nearbyFullStations.map(stationUrlAndAvailableBikes.tupled))
-    }))
   }
 }
