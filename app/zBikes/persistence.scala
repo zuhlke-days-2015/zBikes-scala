@@ -10,52 +10,85 @@ import scala.collection.immutable.SortedMap
 import scala.concurrent.Future
 
 object Mongo {
-
-
   import Execution.Implicits.defaultContext
   import Model._
   import reactivemongo.bson._
 
   lazy val mongo = Play.current.injector.instanceOf[ReactiveMongoApi]
-  private val stations = mongo.connection.db("zBikes").collection[BSONCollection]("station")
 
-  implicit val locationFormat = Macros.handler[Location]
-  implicit val stationHandler = Macros.handler[Station]
+  object Stations {
+    private val collection = mongo.connection.db("zBikes").collection[BSONCollection]("station")
+    private implicit val locationFormat = Macros.handler[Location]
+    private implicit val stationHandler = Macros.handler[Station]
 
-  def upsertStation(s: Station) = stations.update(
-    selector = BSONDocument("_id" -> s.id),
-    update = s,
-    upsert = true
-  )
-
-  def findStation(id: StationId): Future[Option[Station]] = stations.find(BSONDocument("_id" -> id)).one[Station]
-
-  def findStationsNear(l: Location): Future[List[Station]] = stations.find(
-    BSONDocument(
-      "$and" -> Seq(
-        BSONDocument("location.lat" -> BSONDocument("$lte" -> (l.lat + 0.011))),
-        BSONDocument("location.lat" -> BSONDocument("$gte" -> (l.lat - 0.011))),
-        BSONDocument("location.long" -> BSONDocument("$lte" -> (l.long + 0.011))),
-        BSONDocument("location.long" -> BSONDocument("$gte" -> (l.long - 0.011)))
-      )
+    def upsert(s: Station) = collection.update(
+      selector = BSONDocument("_id" -> s.id),
+      update = s,
+      upsert = true
     )
-  ).cursor[Station](ReadPreference.primary).collect[List]()
 
-  def removeAllStations(): Future[Unit] = stations.drop()
+    def find(id: StationId): Future[Option[Station]] = collection.find(BSONDocument("_id" -> id)).one[Station]
 
-  @deprecated
-  def allStations: Future[List[Station]] = stations.find(BSONDocument()).cursor[Station](ReadPreference.primary).collect[List]()
-}
+    def findNear(l: Location): Future[List[Station]] = collection.find(
+      BSONDocument(
+        "$and" -> Seq(
+          BSONDocument("location.lat" -> BSONDocument("$lte" -> (l.lat + 0.011))),
+          BSONDocument("location.lat" -> BSONDocument("$gte" -> (l.lat - 0.011))),
+          BSONDocument("location.long" -> BSONDocument("$lte" -> (l.long + 0.011))),
+          BSONDocument("location.long" -> BSONDocument("$gte" -> (l.long - 0.011)))
+        )
+      )
+    ).cursor[Station](ReadPreference.primary).collect[List]()
 
-object InMemoryState {
-  import Model._
+    def removeAll() = collection.drop()
 
-  var bikeStore = SortedMap.empty[BikeId, BikeStatus]
-
-  def availableAt(stationId: String): PartialFunction[(BikeId, BikeStatus), Boolean] = {
-    case (_, Available(id)) => stationId == id
-    case _ => false
+    @deprecated
+    def allStations: Future[List[Station]] = collection.find(BSONDocument()).cursor[Station](ReadPreference.primary).collect[List]()
   }
 
-  def nearTo(otherLocation: Location): Station => Boolean = { _.location near otherLocation }
+
+  object Bikes {
+    private val collection = mongo.connection.db("zBikes").collection[BSONCollection]("bike")
+
+    implicit val bikeStatusReader = new BSONDocumentReader[Bike] {
+      def read(bson: BSONDocument) = {
+        bson.getAs[BikeId]("_id").map { id =>
+          val stationId = bson.getAs[StationId]("atStation")
+          val username = bson.getAs[String]("username")
+          (stationId, username) match {
+            case (Some(s), None) => Available(id, s)
+          }
+        }.get
+      }
+    }
+    implicit val availableReader = Macros.handler[Available]
+
+    def removeAll() = collection.drop()
+
+    def removeAll(stationId: String, bikes: Seq[BikeId]) = collection.remove(
+      query = BSONDocument("$or" -> Seq(
+        BSONDocument("atStation" -> stationId),
+        BSONDocument("_id" -> BSONDocument("$in" -> bikes))
+      ))
+    )
+
+    def insert(stationId: String, bikes: Seq[BikeId]) = collection.bulkInsert(
+      documents = bikes.map( id =>
+        BSONDocument("atStation" -> stationId, "_id" -> id)
+      ).toStream,
+      ordered = false
+    )
+
+    def findAll(stationId: String): Future[List[Available]] = findAll(List(stationId))
+
+    def findAll(stationIds: List[StationId]): Future[List[Available]] =
+      collection.find(BSONDocument("atStation" -> BSONDocument("$in" -> stationIds))).cursor[Available].collect[List]()
+
+//    def findFirst(stationId: String): Option[(BikeId, Bike)] = {
+//      InMemoryState.bikeStore.find(InMemoryState.availableAt(stationId))
+//    }
+//
+    def count(stationId: StationId) =
+      collection.count(selector = Some(BSONDocument("atStation" -> stationId)))
+  }
 }

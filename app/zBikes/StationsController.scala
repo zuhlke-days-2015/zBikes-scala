@@ -7,6 +7,7 @@ import play.api.libs.ws.WS
 import play.api.mvc.{Action, BodyParsers, Controller}
 
 import scala.collection.immutable.SortedMap
+import scala.concurrent.Future
 
 class StationsController extends Controller {
 
@@ -15,104 +16,120 @@ class StationsController extends Controller {
   import Model._
   import Json._
 
-  def upsert(stationId: String) = Action(BodyParsers.parse.json) { implicit req =>
+  def upsert(stationId: String) = Action.async(parse.json) { implicit req =>
     val station = Station(
       id = stationId,
       name = (req.body \ "name").as[String],
       location = (req.body \ "location").as[Location]
     )
-    val bikes = (req.body \ "availableBikes").as[Seq[BikeId]]
+    val bikeIds = (req.body \ "availableBikes").as[Seq[BikeId]]
 
-    Mongo.upsertStation(station)
-    InMemoryState.bikeStore = InMemoryState.bikeStore.filterNot(InMemoryState.availableAt(stationId))
-    for (bikeId <- bikes) {
-      InMemoryState.bikeStore += (bikeId -> Available(stationId))
-    }
-    Ok.withHeaders("Location" -> routes.StationsController.view(stationId).url)
+    for {
+      _ <- Mongo.Stations.upsert(station)
+      _ <- Mongo.Bikes.removeAll(stationId, bikeIds)
+      _ <- Mongo.Bikes.insert(stationId, bikeIds)
+    } yield Ok.withHeaders("Location" -> routes.StationsController.view(stationId).url)
   }
 
+
+
   def view(stationId: String) = Action.async {
-    Mongo.findStation(id = stationId) map {
-      case Some(station) => Ok(
-        toJson(station).as[JsObject] ++ obj("availableBikes" -> InMemoryState.bikeStore.filter(InMemoryState.availableAt(stationId)).keys.toSeq.sorted)
-      )
-      case None => NotFound
+    Mongo.Bikes.findAll(stationId) flatMap { bikes =>
+      Mongo.Stations.find(id = stationId) map {
+        case Some(station) =>
+          Ok(
+            toJson(station).as[JsObject] ++ obj("availableBikes" -> bikes.map(_._id))
+          )
+        case None => NotFound
+      }
     }
   }
 
   def near(lat: Double, long: Double) = Action.async {
-    Mongo.findStationsNear(Location(lat, long)).map { localStations =>
-      Ok(Json.obj("items" -> localStations.map { station =>
-        toJson(station).as[JsObject] ++ obj(
-          "availableBikeCount" -> InMemoryState.bikeStore.count(InMemoryState.availableAt(station.id)),
-          "selfUrl" -> routes.StationsController.view(station.id),
-          "hireUrl" -> routes.StationsController.hireBike(station.id)
-        )
-      }))
+    Mongo.Stations.findNear(Location(lat, long)).flatMap { localStations =>
+      Mongo.Bikes.findAll(localStations.map(_.id)).map { bikes =>
+        Ok(Json.obj("items" -> localStations.map { station =>
+          toJson(station).as[JsObject] ++ obj(
+            "availableBikeCount" -> bikes.count(_.atStation == station.id),
+            "selfUrl" -> routes.StationsController.view(station.id),
+            "hireUrl" -> routes.StationsController.hireBike(station.id)
+          )
+        }))
+      }
     }
   }
+
 
   val removeAll = Action.async {
-    Mongo.removeAllStations().map { _ =>
-      InMemoryState.bikeStore = SortedMap.empty
-      Ok
-    }
+    for {
+      _ <- Mongo.Stations.removeAll()
+      _ <- Mongo.Bikes.removeAll()
+    } yield Ok
   }
 
-  def hireBike(stationId: String) = Action.async(parse.json) { req =>
-    val username = (req.body \ "username").as[String]
-    WS.url(s"http://localhost:9005/customer/$username").get().map(_.status).map {
-      case OK =>
-        InMemoryState.bikeStore.find(InMemoryState.availableAt(stationId)) match {
-          case Some((availableBikeId, _)) =>
-            InMemoryState.bikeStore += (availableBikeId -> Hired(username))
-            Ok(obj("bikeId" -> availableBikeId))
-          case None =>
-            NotFound
-        }
-      case UNAUTHORIZED => Unauthorized
-      case other => InternalServerError
-    }
+  def hireBike(stationId: StationId) = Action.async(parse.json) { req =>
+//    val username = (req.body \ "username").as[String]
+//    WS.url(s"http://localhost:9005/customer/$username").get().map(_.status).map {
+//      case OK =>
+//        Bikes.findFirst(stationId) match {
+//          case Some((availableBikeId, _)) =>
+//            hire(username, availableBikeId)
+//            Ok(obj("bikeId" -> availableBikeId))
+//          case None =>
+//            NotFound
+//        }
+//      case UNAUTHORIZED => Unauthorized
+//      case other => InternalServerError
+//    }
+    Future(InternalServerError)
   }
 
-  def returnBike(stationId: StationId, bikeId: BikeId) = Action(parse.json) { req =>
-    val username = (req.body \ "username").as[String]
-    InMemoryState.bikeStore.get(bikeId) match {
-      case None => NotFound
-      case Some(Hired(`username`)) =>
-        InMemoryState.bikeStore += (bikeId -> Available(stationId))
-        Ok
-      case Some(Hired(otherUsername)) =>
-        Forbidden
-      case Some(Available(_)) =>
-        Conflict
-    }
+//  def hire(username: String, availableBikeId: BikeId): Unit = {
+//    InMemoryState.bikeStore += (availableBikeId -> Hired(username))
+//  }
+
+  def returnBike(stationId: StationId, bikeId: BikeId) = Action.async(parse.json) { req =>
+//    val username = (req.body \ "username").as[String]
+//    InMemoryState.bikeStore.get(bikeId) match {
+//      case None => NotFound
+//      case Some(Hired(`username`)) =>
+//        InMemoryState.bikeStore += (bikeId -> Available(stationId))
+//        Ok
+//      case Some(Hired(otherUsername)) =>
+//        Forbidden
+//      case Some(Available(_)) =>
+//        Conflict
+//    }
+
+    Future(InternalServerError)
   }
 
   def depleted = Action.async {
-    Mongo.allStations.map { stationStore =>
-      val depletedStations = stationStore flatMap { case depletedStation =>
-        val count = InMemoryState.bikeStore.count(InMemoryState.availableAt(depletedStation.id))
-        if (count > 10) None
-        else {
-          val nearbyStations = stationStore.filter(InMemoryState.nearTo(depletedStation.location))
-          val nearbyFullStations = nearbyStations.flatMap { case station =>
-            val count = InMemoryState.bikeStore.count(InMemoryState.availableAt(station.id))
-            if (count > 20) Some(station.id -> count)
-            else None
-          }
-          Some(depletedStation.id -> (count, nearbyFullStations))
-        }
-      }
+//    Mongo.Stations.allStations.map { stationStore =>
+//      val depletedStations = stationStore flatMap { case depletedStation =>
+//        val count = Bikes.count(depletedStation.id)
+//        if (count > 10) None
+//        else {
+//          val nearbyStations = stationStore.filter(InMemoryState.nearTo(depletedStation.location))
+//          val nearbyFullStations = nearbyStations.flatMap { case station =>
+//            val count = Bikes.count(station.id)
+//            if (count > 20) Some(station.id -> count)
+//            else None
+//          }
+//          Some(depletedStation.id -> (count, nearbyFullStations))
+//        }
+//      }
+//
+//      val stationUrlAndAvailableBikes = (stationId: StationId, bikeCount: Int) => Json.obj(
+//        "stationUrl" -> routes.StationsController.view(stationId),
+//        "availableBikes" -> bikeCount
+//      )
+//
+//      Ok(Json.obj("items" -> depletedStations.map { case (stationId, (bikeCount, nearbyFullStations)) =>
+//        stationUrlAndAvailableBikes(stationId, bikeCount) ++ Json.obj("nearbyFullStations" -> nearbyFullStations.map(stationUrlAndAvailableBikes.tupled))
+//      }))
+//    }
 
-      val stationUrlAndAvailableBikes = (stationId: StationId, bikeCount: Int) => Json.obj(
-        "stationUrl" -> routes.StationsController.view(stationId),
-        "availableBikes" -> bikeCount
-      )
-
-      Ok(Json.obj("items" -> depletedStations.map { case (stationId, (bikeCount, nearbyFullStations)) =>
-        stationUrlAndAvailableBikes(stationId, bikeCount) ++ Json.obj("nearbyFullStations" -> nearbyFullStations.map(stationUrlAndAvailableBikes.tupled))
-      }))
-    }
+    Future(InternalServerError)
   }
 }
