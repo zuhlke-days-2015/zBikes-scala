@@ -26,6 +26,5 @@ object Model {
   case class Station(id: String, name: String, location: Location)
 
   implicit val locationFormat = format[Location]
-  implicit val stationReads = reads[Station]
   implicit val stationWrites = writes[Station].transform(js => js.as[JsObject] - "id")
 }

@@ -29,15 +29,27 @@ object Mongo {
   )
 
   def findStation(id: StationId): Future[Option[Station]] = stations.find(BSONDocument("_id" -> id)).one[Station]
-  def allStations: Future[List[Station]] = stations.find(BSONDocument()).cursor[Station](ReadPreference.primary).collect[List]()
+
+  def findStationsNear(l: Location): Future[List[Station]] = stations.find(
+    BSONDocument(
+      "$and" -> Seq(
+        BSONDocument("location.lat" -> BSONDocument("$lte" -> (l.lat + 0.011))),
+        BSONDocument("location.lat" -> BSONDocument("$gte" -> (l.lat - 0.011))),
+        BSONDocument("location.long" -> BSONDocument("$lte" -> (l.long + 0.011))),
+        BSONDocument("location.long" -> BSONDocument("$gte" -> (l.long - 0.011)))
+      )
+    )
+  ).cursor[Station](ReadPreference.primary).collect[List]()
+
   def removeAllStations(): Future[Unit] = stations.drop()
 
+  @deprecated
+  def allStations: Future[List[Station]] = stations.find(BSONDocument()).cursor[Station](ReadPreference.primary).collect[List]()
 }
 
 object InMemoryState {
   import Model._
 
-  var stationStore = Map.empty[StationId, Station]
   var bikeStore = SortedMap.empty[BikeId, BikeStatus]
 
   def availableAt(stationId: String): PartialFunction[(BikeId, BikeStatus), Boolean] = {

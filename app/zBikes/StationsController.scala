@@ -41,7 +41,7 @@ class StationsController extends Controller {
   }
 
   def near(lat: Double, long: Double) = Action.async {
-    Mongo.allStations.map(_.filter(InMemoryState.nearTo(Location(lat, long)))).map { localStations =>
+    Mongo.findStationsNear(Location(lat, long)).map { localStations =>
       Ok(Json.obj("items" -> localStations.map { station =>
         toJson(station).as[JsObject] ++ obj(
           "availableBikeCount" -> InMemoryState.bikeStore.count(InMemoryState.availableAt(station.id)),
@@ -53,7 +53,7 @@ class StationsController extends Controller {
   }
 
   val removeAll = Action.async {
-    Mongo.removeAllStations.map { _ =>
+    Mongo.removeAllStations().map { _ =>
       InMemoryState.bikeStore = SortedMap.empty
       Ok
     }
