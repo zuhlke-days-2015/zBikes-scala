@@ -41,9 +41,6 @@ object Mongo {
     ).cursor[Station](ReadPreference.primary).collect[List]()
 
     def removeAll() = collection.drop()
-
-    @deprecated
-    def allStations: Future[List[Station]] = collection.find(BSONDocument()).cursor[Station](ReadPreference.primary).collect[List]()
   }
 
 
@@ -84,11 +81,14 @@ object Mongo {
     def findAll(stationIds: List[StationId]): Future[List[Available]] =
       collection.find(BSONDocument("atStation" -> BSONDocument("$in" -> stationIds))).cursor[Available].collect[List]()
 
-//    def findFirst(stationId: String): Option[(BikeId, Bike)] = {
-//      InMemoryState.bikeStore.find(InMemoryState.availableAt(stationId))
-//    }
-//
-    def count(stationId: StationId) =
-      collection.count(selector = Some(BSONDocument("atStation" -> stationId)))
+    def hireFrom(stationId: String): Future[Option[BikeId]] = collection.findAndUpdate(
+      selector = BSONDocument("atStation" -> stationId),
+      update = BSONDocument("$unset" -> BSONDocument("atStation" -> 1)),
+      fetchNewObject = true
+    ).map { r =>
+      r.value.flatMap(_.getAs[BikeId]("_id"))
+    }
+
+    def count(stationId: StationId) = collection.count(selector = Some(BSONDocument("atStation" -> stationId)))
   }
 }

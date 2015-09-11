@@ -65,25 +65,16 @@ class StationsController extends Controller {
   }
 
   def hireBike(stationId: StationId) = Action.async(parse.json) { req =>
-//    val username = (req.body \ "username").as[String]
-//    WS.url(s"http://localhost:9005/customer/$username").get().map(_.status).map {
-//      case OK =>
-//        Bikes.findFirst(stationId) match {
-//          case Some((availableBikeId, _)) =>
-//            hire(username, availableBikeId)
-//            Ok(obj("bikeId" -> availableBikeId))
-//          case None =>
-//            NotFound
-//        }
-//      case UNAUTHORIZED => Unauthorized
-//      case other => InternalServerError
-//    }
-    Future(InternalServerError)
+    val username = (req.body \ "username").as[String]
+    WS.url(s"http://localhost:9005/customer/$username").get().map(_.status).flatMap {
+      case OK => Mongo.Bikes.hireFrom(stationId) map {
+        case Some(bikeId) => Ok(obj("bikeId" -> bikeId))
+        case None => NotFound
+      }
+      case UNAUTHORIZED => Future.successful(Unauthorized)
+      case other => Future.successful(BadGateway)
+    }
   }
-
-//  def hire(username: String, availableBikeId: BikeId): Unit = {
-//    InMemoryState.bikeStore += (availableBikeId -> Hired(username))
-//  }
 
   def returnBike(stationId: StationId, bikeId: BikeId) = Action.async(parse.json) { req =>
 //    val username = (req.body \ "username").as[String]
