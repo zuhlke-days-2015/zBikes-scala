@@ -16,6 +16,13 @@ class StationsController extends Controller {
   import Model._
   import Play.current
 
+  val removeAll = Action.async {
+    for {
+      _ <- Mongo.Stations.removeAll()
+      _ <- Mongo.Bikes.removeAll()
+    } yield Ok
+  }
+
   def upsert(stationId: String) = Action.async(parse.json) { implicit req =>
     val station = Station(
       id = stationId,
@@ -26,15 +33,13 @@ class StationsController extends Controller {
 
     for {
       _ <- Mongo.Stations.upsert(station)
-      _ <- Mongo.Bikes.removeAll(stationId, bikeIds)
+      _ <- Mongo.Bikes.remove(stationId, bikeIds)
       _ <- Mongo.Bikes.insert(stationId, bikeIds)
     } yield Ok.withHeaders("Location" -> routes.StationsController.view(stationId).url)
   }
 
-
-
   def view(stationId: String) = Action.async {
-    Mongo.Bikes.findAll(stationId) flatMap { bikes =>
+    Mongo.Bikes.findAll(List(stationId)) flatMap { bikes =>
       Mongo.Stations.find(id = stationId) map {
         case Some(station) =>
           Ok(toJson(station).as[JsObject] ++ obj("availableBikes" -> bikes.map(_._id)))
@@ -56,13 +61,6 @@ class StationsController extends Controller {
     }))
   }
 
-
-  val removeAll = Action.async {
-    for {
-      _ <- Mongo.Stations.removeAll()
-      _ <- Mongo.Bikes.removeAll()
-    } yield Ok
-  }
 
   def hireBike(stationId: StationId) = Action.async(parse.json) { req =>
     val username = (req.body \ "username").as[String]

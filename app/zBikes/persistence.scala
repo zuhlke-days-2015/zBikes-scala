@@ -60,7 +60,7 @@ object Mongo {
 
     def removeAll() = collection.drop()
 
-    def removeAll(stationId: String, bikes: Seq[BikeId]) = collection.remove(
+    def remove(stationId: String, bikes: Seq[BikeId]) = collection.remove(
       query = BSONDocument("$or" -> Seq(
         BSONDocument("atStation" -> stationId),
         BSONDocument("_id" -> BSONDocument("$in" -> bikes))
@@ -73,8 +73,6 @@ object Mongo {
       ).toStream,
       ordered = false
     )
-
-    def findAll(stationId: String): Future[List[Available]] = findAll(List(stationId))
 
     def findAll(stationIds: List[StationId]): Future[List[Available]] =
       collection.find(BSONDocument("atStation" -> BSONDocument("$in" -> stationIds))).cursor[Available].collect[List]()
@@ -108,7 +106,5 @@ object Mongo {
       case object HiredByOtherUser
       case object CurrentlyAtStation
     }
-
-    def count(stationId: StationId) = collection.count(selector = Some(BSONDocument("atStation" -> stationId)))
   }
 }
