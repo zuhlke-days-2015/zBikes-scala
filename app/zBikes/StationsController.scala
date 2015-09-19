@@ -4,17 +4,17 @@ import play.api.Play
 import play.api.libs.concurrent.Execution
 import play.api.libs.json.{JsObject, Json}
 import play.api.libs.ws.WS
-import play.api.mvc.{Action, BodyParsers, Controller}
+import play.api.mvc.{Action, Controller}
+import zBikes.Mongo.Bikes.ReturnResult
 
-import scala.collection.immutable.SortedMap
 import scala.concurrent.Future
 
 class StationsController extends Controller {
 
   import Execution.Implicits.defaultContext
-  import Play.current
-  import Model._
   import Json._
+  import Model._
+  import Play.current
 
   def upsert(stationId: String) = Action.async(parse.json) { implicit req =>
     val station = Station(
@@ -67,7 +67,7 @@ class StationsController extends Controller {
   def hireBike(stationId: StationId) = Action.async(parse.json) { req =>
     val username = (req.body \ "username").as[String]
     WS.url(s"http://localhost:9005/customer/$username").get().map(_.status).flatMap {
-      case OK => Mongo.Bikes.hireFrom(stationId) map {
+      case OK => Mongo.Bikes.hireBike(username, stationId) map {
         case Some(bikeId) => Ok(obj("bikeId" -> bikeId))
         case None => NotFound
       }
@@ -77,19 +77,17 @@ class StationsController extends Controller {
   }
 
   def returnBike(stationId: StationId, bikeId: BikeId) = Action.async(parse.json) { req =>
-//    val username = (req.body \ "username").as[String]
-//    InMemoryState.bikeStore.get(bikeId) match {
-//      case None => NotFound
-//      case Some(Hired(`username`)) =>
-//        InMemoryState.bikeStore += (bikeId -> Available(stationId))
-//        Ok
-//      case Some(Hired(otherUsername)) =>
-//        Forbidden
-//      case Some(Available(_)) =>
-//        Conflict
-//    }
-
-    Future(InternalServerError)
+    import ReturnResult._
+    Mongo.Bikes.returnBike(
+      username = (req.body \ "username").as[String],
+      stationId = stationId,
+      bikeId = bikeId
+    ).map {
+      case Completed          => Ok
+      case BikeNotFound       => NotFound
+      case CurrentlyAtStation => Conflict
+      case HiredByOtherUser   => Forbidden
+    }
   }
 
   def depleted = Action.async {

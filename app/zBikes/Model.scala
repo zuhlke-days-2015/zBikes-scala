@@ -12,7 +12,7 @@ object Model {
   sealed trait Bike {
     def _id: BikeId
   }
-  case class Hired(_id: BikeId, username: String) extends Bike
+  case class Hired(_id: BikeId, withUser: String) extends Bike
   case class Available(_id: BikeId, atStation: StationId) extends Bike
 
   case class Location(lat: Double, long: Double) {

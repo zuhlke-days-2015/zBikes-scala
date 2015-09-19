@@ -5,6 +5,7 @@ import play.api.libs.concurrent.Execution
 import play.modules.reactivemongo.ReactiveMongoApi
 import reactivemongo.api.{CursorProducer, ReadPreference}
 import reactivemongo.api.collections.bson.BSONCollection
+import zBikes.Mongo.Bikes.ReturnResult.HiredByOtherUser
 
 import scala.collection.immutable.SortedMap
 import scala.concurrent.Future
@@ -47,18 +48,15 @@ object Mongo {
   object Bikes {
     private val collection = mongo.connection.db("zBikes").collection[BSONCollection]("bike")
 
-    implicit val bikeStatusReader = new BSONDocumentReader[Bike] {
-      def read(bson: BSONDocument) = {
-        bson.getAs[BikeId]("_id").map { id =>
-          val stationId = bson.getAs[StationId]("atStation")
-          val username = bson.getAs[String]("username")
-          (stationId, username) match {
-            case (Some(s), None) => Available(id, s)
-          }
-        }.get
-      }
-    }
     implicit val availableReader = Macros.handler[Available]
+    implicit val hiredReader = Macros.handler[Hired]
+
+    implicit val bikeStatusReader = new BSONDocumentReader[Bike] {
+      def read(bson: BSONDocument) =
+        availableReader.readOpt(bson) orElse
+        hiredReader.readOpt(bson) getOrElse
+        (throw new IllegalStateException(s"Bike stored as $bson"))
+    }
 
     def removeAll() = collection.drop()
 
@@ -81,12 +79,34 @@ object Mongo {
     def findAll(stationIds: List[StationId]): Future[List[Available]] =
       collection.find(BSONDocument("atStation" -> BSONDocument("$in" -> stationIds))).cursor[Available].collect[List]()
 
-    def hireFrom(stationId: String): Future[Option[BikeId]] = collection.findAndUpdate(
+    def hireBike(username: String, stationId: StationId): Future[Option[BikeId]] = collection.findAndUpdate(
       selector = BSONDocument("atStation" -> stationId),
-      update = BSONDocument("$unset" -> BSONDocument("atStation" -> 1)),
+      update = BSONDocument(
+        "$unset" -> BSONDocument("atStation" -> 1),
+        "$set" -> BSONDocument("withUser" -> username)
+      ),
       fetchNewObject = true
-    ).map { r =>
-      r.value.flatMap(_.getAs[BikeId]("_id"))
+    ).map(_.value.flatMap(_.getAs[BikeId]("_id")))
+
+    def returnBike(username: String, stationId: StationId, bikeId: BikeId) = collection.findAndUpdate(
+      selector = BSONDocument("_id" -> bikeId, "withUser" -> username),
+      update = BSONDocument("$set" -> BSONDocument("atStation" -> stationId))
+    ).flatMap { e =>
+      import ReturnResult._
+      if (e.lastError.exists(_.updatedExisting)) Future.successful(Completed)
+      else collection.find(BSONDocument("_id" -> bikeId)).one[Bike].map {
+        case Some(Hired(_, otherUser)) => HiredByOtherUser
+        case Some(Available(_, station)) => CurrentlyAtStation
+        case None => BikeNotFound
+      }
+    }
+
+    sealed trait ReturnResult
+    object ReturnResult {
+      case object Completed
+      case object BikeNotFound
+      case object HiredByOtherUser
+      case object CurrentlyAtStation
     }
 
     def count(stationId: StationId) = collection.count(selector = Some(BSONDocument("atStation" -> stationId)))
